@@ -291,7 +291,8 @@ For each (query, expected_answer) pair:
 - Score candidate output against expected_answer using 4 lexical metrics
 
 Output: `scoring_matrix_TYPE_NAME.json` — one row per example
-<br>
+
+**Combination scoring (optional):** By default, each component is evaluated in isolation (`--eval-combination-size 1`). Set to N > 1 to evaluate the component alongside N−1 random others. This captures joint effects but costs N× more LLM calls.
 
 <details>
 <summary>Mermaid diagram — Stage 1 internal detail</summary>
@@ -747,6 +748,33 @@ For each (cluster, budget) pair — default 20 × 3 = 60 optimization targets �
 **Crossover:** uniform crossover (each bit independently inherited from either parent)
 
 Token constraint: a genome that would exceed the budget for its tier receives a fitness penalty.
+<br>
+
+<details>
+<summary>Mermaid diagram — evolutionary search per target</summary>
+
+```mermaid
+graph TD
+    IN["Cluster centroid v\n+ component data"] --> INIT["Initialize 100 random genomes"]
+    INIT --> LOOP["Generation 1..200"]
+    LOOP --> EVAL["Evaluate fitness(b)"]
+    EVAL --> SEL["Tournament select\nk=3 parents"]
+    SEL --> XO["Uniform crossover"]
+    XO --> MUT["Bit-flip mutation\np=0.05"]
+    MUT --> GEN["Generation += 1"]
+    GEN -->|200 reached| PF["Extract Pareto front"]
+    PF --> BUD["Budget selection\npick best per tier"]
+    BUD --> OUT["Store in context_configs.json"]
+
+    classDef init fill:#e8f5e9
+    classDef loop fill:#fff3e0
+    classDef out fill:#e3f2fd
+    class INIT init
+    class LOOP,EVAL,SEL,XO,MUT,GEN,PFA loop
+    class BUD,PF,OUT out
+```
+
+</details>
 
 ---
 
@@ -797,56 +825,47 @@ The effect: between two combinations with the same quality score, the one that a
 
 Nobody derived it from a theorem. It was constructed by asking: "what are the two things we care about, and how do we combine them into one number?" Quality × relevance for each included component, summed up, minus a small token penalty. Multiplication ensures both conditions must be true simultaneously. The sum rewards combinations, not individual components. The subtraction makes efficiency matter without dominating.
 
+**Parameter λ:** Defaults to 0.1. If `--use-cluster-lambda` is enabled and tuned values exist (from the `tune` command), per-cluster λ values replace the default. If no tuned values exist, the hardcoded default is used.
+
 </details>
 
 <details>
 <summary>Mermaid diagram — fitness computation pipeline</summary>
 
 ```mermaid
-graph TD
-    subgraph INPUTS["Inputs for one genome"]
-        V["v = cluster centroid embedding<br/>(fixed for this optimization target)"]
-        CI["component i data:<br/>mean_score_i · centroid_i · tokens_i"]
-        BI["bit_i ∈ {0, 1}<br/>(from genome)"]
-        BUD["budget = token limit<br/>(2000 / 4000 / 8000)"]
+graph LR
+    subgraph STEP1["Per component"]
+        CI["component_i"]
+        V["cluster centroid v"]
+        BI["bit_i"] --> SEL{"included?"}
+        CI --> MS["mean_score_i"]
+        V --> COS["cos(v, c_i)"]
     end
 
-    subgraph PER["Per-component — computed for all N components"]
-        COS["cosine(v, centroid_i)<br/>how relevant is component i to this cluster?"]
-        MUL["contribution_i =<br/>mean_score_i × cosine_i × bit_i"]
-        TK["token_use_i = tokens_i × bit_i"]
-        CI --> COS
-        V --> COS
-        COS --> MUL
-        CI --> MUL
-        BI --> MUL
-        BI --> TK
-        CI --> TK
-    end
+    MS --> MUL["contribution =<br/>score × cosine × bit"]
+    COS --> MUL
+    SEL -->|yes| MUL
 
-    subgraph AGG["Aggregate across all N components"]
-        REWARD["reward = Σᵢ contribution_i<br/>(sum of quality × relevance for included components)"]
-        TSUM["token_sum = Σᵢ token_use_i"]
-        PEN["penalty = 0.1 × token_sum / budget"]
-        OVB["token_sum > budget?<br/>→ heavy negative override"]
-        FIT["fitness(b) = reward − penalty"]
-        MUL --> REWARD
-        TK --> TSUM
-        TSUM --> PEN
-        TSUM --> OVB
-        REWARD --> FIT
-        PEN --> FIT
-        OVB --> FIT
-    end
+    MUL --> REW["reward = Σ contributions"]
+    CI --> TK["tokens_i"]
+    TK --> TKS["token_sum = Σ tokens"]
+
+    TKS --> PEN["penalty =<br/>λ × token_sum / budget"]
+    BUD["budget"] --> PEN
+    TKS --> OVB{"over budget?"}
+
+    REW --> SUB["reward − penalty"]
+    PEN --> SUB
+    OVB -->|yes| NEG["override:<br/>heavy negative"]
+    NEG --> FIT["fitness"]
+    SUB --> FIT
 
     classDef inp fill:#e8f5e9
-    classDef per fill:#fff3e0
-    classDef agg fill:#e3f2fd
+    classDef calc fill:#fff3e0
     classDef out fill:#fce4ec
-    class V,CI,BI,BUD inp
-    class COS,MUL,TK per
-    class REWARD,TSUM,PEN agg
-    class OVB,FIT out
+    class CI,V,BI,MS,COS,BUD inp
+    class SEL,MUL,REW,TK,TKS,PEN,OVB,NEG,SUB calc
+    class FIT out
 ```
 
 </details>
@@ -854,15 +873,15 @@ graph TD
 <details>
 <summary>Gap to real ML</summary>
 
-The fitness function is not learned — it is hand-crafted and fixed. In a real ML system, the weights inside the formula would themselves come from data.
+**The fitness function is not learned.** It is hand-crafted and fixed. In a real ML system, the weights would come from data rather than engineering intuition.
 
-**λ = 0.1 is a guess.** This controls how much token cost matters relative to quality. The right value likely differs per cluster (some query types genuinely need many components, others need very few), per deployment, and over time as the library grows. A real ML system would learn λ from historical (config, outcome) pairs and adapt it per cluster.
+**λ defaults to a hardcoded 0.1.** The right value likely differs per cluster, per deployment, and over time. The `tune` command with `--use-cluster-lambda` can learn per-cluster λ values from historical outcomes. If tuned values exist and `--use-cluster-lambda` is enabled, they override the default. If not, the hardcoded default is used. So the gap is partially addressed: tuning is available, but it is not automatic.
 
-**The formula structure itself is not learned.** The multiplication of mean_score × cosine, the linear sum over components, and the subtraction of the token penalty are design choices, not learned relationships. The formula assumes quality and relevance multiply together, that they combine linearly across components, and that token cost trades off linearly against quality. None of these assumptions were tested against real data — they are reasonable engineering guesses.
+**The formula structure itself is not learned.** The multiplication of mean_score × cosine, the linear sum, and the subtraction of token penalty are fixed design choices. The assumptions (quality and relevance multiply, components combine linearly, token cost trades off linearly) were never tested against real data.
 
-**The formula cannot detect combination effects.** Two components that are great together but modest individually will each get modest individual rewards. The formula sums individual contributions — it has no term that rewards pairs or groups of components for jointly covering a query's needs. This is the deepest structural limitation: the fitness function is linear in the bits, so the GA is searching a linear proxy for what is actually a nonlinear combinatorial quality function.
+**The formula cannot detect combination effects.** Two components that are great together but modest individually will each get modest individual rewards. The fitness function is linear in the bits — it has no interaction term. `--eval-combination-size` at Stage 1 partially addresses this by scoring components jointly, but the GA fitness itself still sums individual contributions.
 
-The closest real-ML equivalent would be a learned ranking model trained on logged (component set, query cluster, outcome quality) triples, fitting the fitness function to actual outcomes rather than constructing it from first principles. That is significantly more complex to build but would be grounded in real signal.
+The closest real-ML equivalent would be a learned ranking model trained on logged (component set, query cluster, outcome quality) triples, fitting the fitness function to actual outcomes. That remains future work.
 
 </details>
 
@@ -1382,7 +1401,10 @@ TRAINING PROCEDURE (per component cᵢ):
 
   fit LogisticRegression(
     penalty = 'l2',
-    C       = 1.0,     ← controls regularization strength (higher = less regularization)
+    C       = 1.0,     ← inverse regularization strength (scikit-learn standard)
+                         lower C = stronger regularization = simpler boundaries
+                         higher C = weaker regularization = closer fit to data
+                         tuned values (from `tune` command) override this default
     solver  = 'lbfgs'  ← scikit-learn default for L2
   ) on (features, labels)
 
@@ -1391,7 +1413,13 @@ TRAINING PROCEDURE (per component cᵢ):
 INFERENCE (at query time, given embedding e):
   For each component i from 1 to N:
     pᵢ = σ(Wᵢ · e + bᵢ)        ← one dot product per component, sub-millisecond total
-    include cᵢ if pᵢ > 0.5
+    thresholdᵢ = tuned threshold for component i if tuned values exist, else 0.5
+    include cᵢ if pᵢ > thresholdᵢ
+
+  Tuned parameters override defaults:
+    - C and threshold per component: set by `tune` command, stored in oracle dir
+    - If tuned values exist, `train-classifier` picks them up automatically
+    - If no tuned values exist, defaults apply (C=1.0, threshold=0.5)
 
   Confidence score:
     confidence = mean over all i of max(pᵢ, 1 − pᵢ)
@@ -1583,7 +1611,7 @@ Rollback: because previous versions are retained, an operator can restore an old
 
 ---
 
-## Slide 32 — Path B: Hyperparameter Tuning
+## Slide 32 — Hyperparameter Tuning
 
 Fixed defaults are starting points. The `tune` subcommand searches for better values using the held-out validation set.
 
@@ -1604,6 +1632,15 @@ Fixed defaults are starting points. The `tune` subcommand searches for better va
 - After at least 100 logged turns, computes Spearman correlation between config fitness (using different λ values) and mean outcome quality of turns assigned to each cluster
 - Selects the λ that maximizes correlation per cluster
 - Writes `per_cluster_lambda.json`; `fitness_computer.py` loads it when available
+
+**Consumption rule:** Every downstream command checks for tuned values first. If they exist, they are used automatically. If not, hardcoded defaults apply. This means tuning is optional — the system works without it, but works better with it.
+
+| Parameter | Default | Tuned value source | Consumed by |
+|---|---|---|---|
+| C | 1.0 | `tune` → classifier registry | `train-classifier` |
+| threshold | 0.5 | `tune` → per-component sweep | `train-classifier` |
+| K | 20 | `tune --auto-k` → optimal K | `evolve` |
+| λ | 0.1 | `tune --use-cluster-lambda` → per-cluster values | `evolve` |
 
 ---
 
