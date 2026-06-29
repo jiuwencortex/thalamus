@@ -41,6 +41,11 @@ class ToolMatrixComposer:
         timeout: float = 3600.0,
         temperature: float = 0.2,
         max_tokens: int = 57000,
+        metrics: list[str] | None = None,
+        judge_model: str = "gpt-4o-mini",
+        judge_api_key: str | None = None,
+        judge_api_base: str = "https://api.openai.com/v1",
+        eval_combination_size: int = 1,
     ):
         self._scanner = ToolCodeScanner(tool_dirs)
         self._matrix_dir = matrix_dir
@@ -56,6 +61,11 @@ class ToolMatrixComposer:
             max_tokens=max_tokens,
             file_prefix=_FILE_PREFIX,
             component_type=_COMPONENT_TYPE,
+            metrics=metrics,
+            judge_model=judge_model,
+            judge_api_key=judge_api_key,
+            judge_api_base=judge_api_base,
+            eval_combination_size=eval_combination_size,
         )
         self._saver = StateSaver(matrix_dir, state_file=_STATE_FILE, component_type=_COMPONENT_TYPE)
         self._printer = SummaryPrinter()

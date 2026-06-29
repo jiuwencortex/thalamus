@@ -47,13 +47,24 @@ class ComponentClassifierTrainer:
         self._C = C
 
     def train(self) -> ComponentInclusionClassifier | None:
-        """Load logged turns, train per-component classifiers, return classifier.
+        """Load all logged turns, train per-component classifiers, return classifier.
 
         Returns None if there are too few turns to train.
         """
         turn_logger = TurnLogger(self._log_dir)
         turns = turn_logger.load_turns(self._max_weeks)
+        return self.train_on_turns(turns)
 
+    def train_on_turns(
+        self, turns: list[dict]
+    ) -> ComponentInclusionClassifier | None:
+        """Train per-component classifiers on a pre-supplied list of turns.
+
+        Accepts an explicit turn list so the caller can pass a pre-split training
+        partition (e.g. from LogSplitter) rather than all available logs.
+
+        Returns None if there are too few turns to train.
+        """
         if len(turns) < self._min_turns:
             logger.warning(
                 "Only %d turns available (need %d); classifier not trained.",
@@ -121,9 +132,11 @@ class ComponentClassifierTrainer:
         return classifier
 
     def train_and_save(self, classifier_path: Path) -> bool:
-        """Train the classifier and save it to classifier_path.
+        """Train the classifier on all available turns and save to classifier_path.
 
         Returns True if training succeeded and classifier was saved, False otherwise.
+        Note: does NOT use the held-out split or model registry.  Use cmd_train_classifier
+        for the full pipeline including evaluation and promotion gate.
         """
         classifier = self.train()
         if classifier is None:

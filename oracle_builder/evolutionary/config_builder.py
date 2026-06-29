@@ -33,8 +33,10 @@ class ContextConfigBuilder:
         embedder: str = "tfidf",
         sentence_model: str = "all-MiniLM-L6-v2",
         validation_config=None,  # pareto_validator.ValidationConfig | None
+        per_cluster_lambda: dict[int, float] | None = None,
     ):
         self._budgets = budgets
+        self._per_cluster_lambda = per_cluster_lambda
 
         # Step classes instantiated with their persistent dependencies
         self._components_loader = ComponentsLoader(oracle_dir)
@@ -88,7 +90,10 @@ class ContextConfigBuilder:
             f"pop={self._evolutionary_runner._pop_size} × "
             f"{clusterer.n_clusters} clusters){validation_note} ..."
         )
-        cluster_results = self._evolutionary_runner.run(components, cluster_texts, clusterer)
+        cluster_results = self._evolutionary_runner.run(
+            components, cluster_texts, clusterer,
+            per_cluster_lambda=self._per_cluster_lambda,
+        )
 
         for r in cluster_results:
             print(f"  Cluster {r['cluster_id']:>2}: {r['n_queries']:>4} queries")

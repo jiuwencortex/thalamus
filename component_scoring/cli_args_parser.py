@@ -90,6 +90,39 @@ def make_parser():
                        help="Real samples per component at which synthetic scores are fully replaced (default: 100, used with --type enrich)")
     build.add_argument("--max-weeks", type=int, default=8,
                        help="Number of weekly log files to scan (default: 8, used with --type enrich)")
+    build.add_argument(
+        "--judge-model", dest="judge_model", default="gpt-4o-mini",
+        help=(
+            "LLM model used as a quality judge.  When 'llm_judge' is included in --metrics, "
+            "this model rates semantic correctness 1–10.  Also used during --type enrich "
+            "(default: gpt-4o-mini)."
+        ),
+    )
+    build.add_argument(
+        "--judge-api-key", dest="judge_api_key", default=None,
+        help="API key for the LLM judge (falls back to OPENAI_API_KEY env var).",
+    )
+    build.add_argument(
+        "--judge-api-base", dest="judge_api_base", default="https://api.openai.com/v1",
+        help="OpenAI-compatible API base URL for the LLM judge (default: https://api.openai.com/v1).",
+    )
+    build.add_argument(
+        "--metrics", dest="metrics", default=None,
+        help=(
+            "Comma-separated list of scoring metrics to compute.  "
+            "Default: f1,bigram_f1,bag_of_words,length_ratio.  "
+            "Available: f1, bigram_f1, bag_of_words, length_ratio, bert_score, llm_judge.  "
+            "Example: --metrics f1,bert_score,llm_judge"
+        ),
+    )
+    build.add_argument(
+        "--eval-combination-size", dest="eval_combination_size", type=int, default=1,
+        help=(
+            "When > 1, evaluate each component as part of random N-component combinations "
+            "using leave-one-out delta scoring.  This detects components that are only useful "
+            "in combination with others.  Default: 1 (isolated evaluation, fast)."
+        ),
+    )
 
     args = p.parse_args()
 

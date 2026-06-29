@@ -12,6 +12,21 @@ from openjiuwen.core.foundation.llm import Model
 from .shared.dry_run import run_dry_run
 
 
+def _metric_kwargs(args: argparse.Namespace) -> dict:
+    """Extract metric configuration from CLI args for passing to composer __init__."""
+    metrics_raw = getattr(args, "metrics", None)
+    metrics = None
+    if metrics_raw:
+        metrics = [m.strip() for m in metrics_raw.split(",") if m.strip()]
+    return {
+        "metrics": metrics,
+        "judge_model": getattr(args, "judge_model", "gpt-4o-mini"),
+        "judge_api_key": getattr(args, "judge_api_key", None),
+        "judge_api_base": getattr(args, "judge_api_base", "https://api.openai.com/v1"),
+        "eval_combination_size": getattr(args, "eval_combination_size", 1),
+    }
+
+
 async def build_skills(args: argparse.Namespace, model: Model, model_name: str) -> None:
     from .skills.composer import SkillMatrixComposer
     from .skills.scanner import ExistingSkillsScanner
@@ -42,6 +57,7 @@ async def build_skills(args: argparse.Namespace, model: Model, model_name: str) 
         timeout=args.timeout,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
+        **_metric_kwargs(args),
     )
     await composer.build(force=args.force, only=args.only)
 
@@ -84,6 +100,7 @@ async def build_memory(args: argparse.Namespace, model: Model, model_name: str) 
         timeout=args.timeout,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
+        **_metric_kwargs(args),
     )
     await composer.build(force=args.force, only=args.only)
 
@@ -119,5 +136,6 @@ async def build_tools(args: argparse.Namespace, model: Model, model_name: str) -
         timeout=args.timeout,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
+        **_metric_kwargs(args),
     )
     await composer.build(force=args.force, only=args.only)

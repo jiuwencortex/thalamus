@@ -34,14 +34,30 @@ class AllItemsEvaluator:
         max_tokens: int = 57000,
         file_prefix: str = "skill_",
         component_type: str = "skill",
+        metrics: list[str] | None = None,
+        judge_model: str = "gpt-4o-mini",
+        judge_api_key: str | None = None,
+        judge_api_base: str = "https://api.openai.com/v1",
+        eval_combination_size: int = 1,
     ):
         self._matrix_dir = matrix_dir
         self._max_parallel = max_parallel
         self._cross_eval = cross_eval
         self._file_prefix = file_prefix
         self._component_type = component_type
+        self._metrics = metrics if metrics is not None else FITNESS_METRICS
+        self._eval_combination_size = max(1, eval_combination_size)
         self._single = SingleEvaluator(
-            model, model_name, timeout=timeout, temperature=temperature, max_tokens=max_tokens
+            model,
+            model_name,
+            timeout=timeout,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            metrics=self._metrics,
+            judge_model=judge_model,
+            judge_api_key=judge_api_key,
+            judge_api_base=judge_api_base,
+            eval_combination_size=self._eval_combination_size,
         )
 
     async def evaluate_all(
@@ -55,18 +71,25 @@ class AllItemsEvaluator:
         all_pairs = self._collect_all_pairs(gen_results)
         sem = asyncio.Semaphore(self._max_parallel)
 
+        # All component bodies available for combination scoring mode
+        all_component_bodies = [c.body for c, _ in gen_results]
+
         new_states: dict[str, ComponentState] = {}
         llm_calls = len(gen_results)
 
         for component, pairs in gen_results:
             eval_pairs = all_pairs if self._cross_eval else pairs
-            rows = await self._single.evaluate_component(component.body, eval_pairs, sem)
+            rows = await self._single.evaluate_component(
+                component.body,
+                eval_pairs,
+                sem,
+                all_component_bodies=all_component_bodies if self._eval_combination_size > 1 else None,
+            )
             self._write_matrix_file(component.name, rows)
             llm_calls += len(eval_pairs)
 
-            mean_score = (
-                sum(r["scores"]["f1"] for r in rows) / len(rows) if rows else 0.0
-            )
+            # Mean score over ALL configured metrics (not just f1)
+            mean_score = _mean_over_metrics(rows, self._metrics)
             new_states[component.name] = ComponentState(
                 fingerprint=component_fingerprint(component),
                 n_examples=len(rows),
@@ -74,8 +97,8 @@ class AllItemsEvaluator:
                 mean_score=round(mean_score, 4),
             )
             logger.info(
-                "component=%s: wrote %d rows, mean_f1=%.3f",
-                component.name, len(rows), mean_score,
+                "component=%s: wrote %d rows, mean_score=%.3f (metrics=%s)",
+                component.name, len(rows), mean_score, ",".join(self._metrics),
             )
 
         return new_states, llm_calls
@@ -104,7 +127,9 @@ class AllItemsEvaluator:
             "run_id": f"{self._file_prefix}{safe}_matrix_{ts}",
             "component_type": self._component_type,
             "component_name": component_name,
-            "fitness_metrics": FITNESS_METRICS,
+            "fitness_metrics": self._metrics,
+            "metrics_used": self._metrics,          # explicit field for drift detection
+            "eval_combination_size": self._eval_combination_size,
             "baseline_cross_eval": [
                 {
                     "example_id": f"{self._file_prefix}{safe}_{i:04d}",
@@ -123,3 +148,24 @@ class AllItemsEvaluator:
 
 # Backward-compatible alias
 AllSkillsEvaluator = AllItemsEvaluator
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _mean_over_metrics(rows: list[dict], metrics: list[str]) -> float:
+    """Compute mean score over all rows and all configured metrics.
+
+    For each row, averages the scores of all configured metrics.
+    Then averages the per-row mean across all rows.
+    """
+    if not rows:
+        return 0.0
+    total = 0.0
+    count = 0
+    for row in rows:
+        scores = row.get("scores", {})
+        for metric in metrics:
+            if metric in scores:
+                total += scores[metric]
+                count += 1
+    return total / count if count > 0 else 0.0

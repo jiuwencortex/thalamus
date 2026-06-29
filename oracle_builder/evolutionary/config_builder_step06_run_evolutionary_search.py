@@ -37,8 +37,17 @@ class EvolutionarySearch:
         components: list[ComponentInfo],
         cluster_texts: dict[int, list[str]],
         clusterer: QueryClusterer,
+        per_cluster_lambda: dict[int, float] | None = None,
     ) -> list[dict]:
-        """Return one result dict per cluster with optimal configs."""
+        """Return one result dict per cluster with optimal configs.
+
+        Parameters
+        ----------
+        per_cluster_lambda:
+            Optional mapping from cluster_id → λ value (written by LambdaTuner).
+            When provided, the per-cluster value overrides the global self._lambda
+            for that cluster's evolutionary search.
+        """
         validator = None
         if self._validation_config is not None:
             from .pareto_validator import ParetoValidator
@@ -51,13 +60,20 @@ class EvolutionarySearch:
             centroid = clusterer.centroid(cluster_id)
             optimal_configs: dict[str, dict] = {}
 
+            # Use per-cluster λ when available, fall back to global
+            lambda_for_cluster = (
+                per_cluster_lambda.get(cluster_id, self._lambda)
+                if per_cluster_lambda
+                else self._lambda
+            )
+
             for budget_name, max_tokens in self._budgets.items():
                 searcher = EvolutionarySearchRunner(
                     components=components,
                     population_size=self._pop_size,
                     n_generations=self._n_gen,
                     mutation_rate=self._mut_rate,
-                    lambda_=self._lambda,
+                    lambda_=lambda_for_cluster,
                     max_tokens=max_tokens,
                     seed=cluster_id,
                 )

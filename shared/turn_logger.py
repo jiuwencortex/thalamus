@@ -173,6 +173,7 @@ class TurnLogger:
         follow_up_correction: bool = False,
         conversation_length: int = 1,
         explicit_rating: Literal["positive", "negative"] | None = None,
+        llm_judge_score: float | None = None,
         skills_used: list[str] | None = None,
         tools_called: list[str] | None = None,
     ) -> bool:
@@ -180,6 +181,15 @@ class TurnLogger:
 
         Scans the current week's log file for the record.  Returns True if
         the record was found and updated, False if not found.
+
+        Parameters
+        ----------
+        llm_judge_score:
+            Optional semantic quality score in [0, 1] produced by an external
+            LLM judge (e.g. via ``outcome_scorer.score_from_llm_judge``).
+            When provided this is stored in the record and used by
+            ``compute_outcome_quality`` as a higher-priority signal than the
+            implicit formula (but lower-priority than ``explicit_rating``).
         """
         log_path = self._current_log_path()
         if not log_path.exists():
@@ -200,7 +210,7 @@ class TurnLogger:
                 continue
 
             if rec.get("turn_id") == turn_id:
-                rec["outcome"] = {
+                outcome: dict = {
                     "explicit_rating": explicit_rating,
                     "implicit_signals": {
                         "follow_up_correction": follow_up_correction,
@@ -212,6 +222,11 @@ class TurnLogger:
                         "tools_called": list(tools_called or []),
                     },
                 }
+                if llm_judge_score is not None:
+                    outcome["llm_judge_score"] = float(
+                        max(0.0, min(1.0, llm_judge_score))
+                    )
+                rec["outcome"] = outcome
                 updated = True
             new_lines.append(json.dumps(rec, ensure_ascii=False))
 
